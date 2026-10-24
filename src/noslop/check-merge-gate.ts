@@ -11,7 +11,6 @@ import { checkCIGreen } from './check-ci-green.ts';
 import { collectOpenFindingIDs } from './collect-open-finding-ids.ts';
 import { checkInstructionHold } from './check-instruction-hold.ts';
 import { findInstructionHeldTest } from './find-instruction-held-test.ts';
-import { findOwnerHeldTest } from './find-owner-held-test.ts';
 import { isBotAuthor } from './is-bot-author.ts';
 import type { PRAuthor } from './is-bot-author.ts';
 import { isNoslopListed } from './is-noslop-listed.ts';
@@ -20,6 +19,7 @@ import { parseLowerRepo } from './parse-lower-repo.ts';
 import type { ParsedRepo } from './parse-lower-repo.ts';
 import { readGateFacts } from './read-gate-facts.ts';
 import type { GateFacts } from './read-gate-facts.ts';
+import { readOwnerHeldTest } from './read-owner-held-test.ts';
 import { readNoslopCheck } from './read-noslop-check.ts';
 import { readNoslopFindings } from './read-noslop-findings.ts';
 import { readOKReviews } from './read-ok-reviews.ts';
@@ -94,7 +94,7 @@ function readUnreviewedRoute(request: PRRequest, parsed: ParsedRepo, author: PRA
 // On every route: a change to an owner-held path needs the owner's own lgtm at the head, and a change
 // to a repo instruction file needs it unless hq clears that hold.
 async function checkOwnerHeld(request: PRRequest, parsed: ParsedRepo, facts: GateFacts): Promise<void> {
-  const ownerHeld = findOwnerHeldTest(parsed);
+  const ownerHeld = await readOwnerHeldTest(request.run, parsed, facts.baseRefOid);
   const instructionHeld = findInstructionHeldTest(parsed);
   if (ownerHeld === null && instructionHeld === null) {
     return;

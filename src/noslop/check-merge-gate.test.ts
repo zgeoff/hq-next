@@ -7,7 +7,7 @@ import { buildStubGateFacts } from '../../test/build-stub-gate-facts.ts';
 import { buildStubPRHead } from '../../test/build-stub-pr-head.ts';
 import { createStubPRRepo } from '../../test/create-stub-pr-repo.ts';
 import { createListedReview } from '../../test/create-listed-review.ts';
-import { FAKE_FULL_SHA, FAKE_TOKEN, buildFakeRunner } from '../../test/noslop-fake.ts';
+import { FAKE_BASE_SHA, FAKE_FULL_SHA, FAKE_TOKEN, buildFakeRunner } from '../../test/noslop-fake.ts';
 import { overrideEnv } from '../config/override-env.ts';
 import { openDb } from '../db/open-db.ts';
 import { setMeta } from '../db/set-meta.ts';
@@ -828,4 +828,105 @@ test('it holds no instruction file of nixie-definitions', async () => {
   const fake = buildFakeRunner({ prFiles: { code: 0, stdout: 'skills/kettle/SKILL.md\n', stderr: '' } });
 
   await expect(checkMergeGate({ run: fake.run, db: ctx.db, rawRepo: 'nixie-definitions', pr: 7 })).resolves.toMatchObject({ mayMerge: true });
+});
+
+test('it holds docs/sessions.md in hq, as its CODEOWNERS lists /docs/', async () => {
+  const ctx = setupTest();
+  const codeowners = Buffer.from('# z-q\n/src/ @zgeoff\n\n# the owner: docs change only with his lgtm\n/skills/ @zgeoff\n/docs/ @zgeoff\n/.claude/ @zgeoff\n').toString('base64');
+  const fake = buildFakeRunner({ prFiles: { code: 0, stdout: 'docs/sessions.md\n', stderr: '' }, contents: { [`.github/CODEOWNERS?ref=${FAKE_BASE_SHA}`]: { code: 0, stdout: JSON.stringify({ type: 'file', encoding: 'base64', content: codeowners }), stderr: '' } } });
+
+  await expect(checkMergeGate({ run: fake.run, db: ctx.db, rawRepo: 'hq', pr: 7 })).rejects.toMatchObject({ code: 'merge_blocked', message: expect.stringContaining('owner-held files (docs/sessions.md)') });
+});
+
+test('it holds .claude/settings.json in hq, as its CODEOWNERS lists /.claude/', async () => {
+  const ctx = setupTest();
+  const codeowners = Buffer.from('# the owner\n/.claude/ @zgeoff\n').toString('base64');
+  const fake = buildFakeRunner({ prFiles: { code: 0, stdout: '.claude/settings.json\n', stderr: '' }, contents: { [`.github/CODEOWNERS?ref=${FAKE_BASE_SHA}`]: { code: 0, stdout: JSON.stringify({ type: 'file', encoding: 'base64', content: codeowners }), stderr: '' } } });
+
+  await expect(checkMergeGate({ run: fake.run, db: ctx.db, rawRepo: 'hq', pr: 7 })).rejects.toMatchObject({ code: 'merge_blocked', message: expect.stringContaining('owner-held files (.claude/settings.json)') });
+});
+
+test('it lets a PR in hq that changes only src/x.ts merge with no lgtm, as CODEOWNERS leaves it to z-q', async () => {
+  const ctx = setupTest();
+  const codeowners = Buffer.from('# z-q\n/src/ @zgeoff\n\n# the owner\n/docs/ @zgeoff\n').toString('base64');
+  const fake = buildFakeRunner({ prFiles: { code: 0, stdout: 'src/x.ts\n', stderr: '' }, contents: { [`.github/CODEOWNERS?ref=${FAKE_BASE_SHA}`]: { code: 0, stdout: JSON.stringify({ type: 'file', encoding: 'base64', content: codeowners }), stderr: '' } } });
+
+  await expect(checkMergeGate({ run: fake.run, db: ctx.db, rawRepo: 'hq', pr: 7 })).resolves.toMatchObject({ mayMerge: true });
+});
+
+test('it holds fleet.json in hq though CODEOWNERS does not list it', async () => {
+  const ctx = setupTest();
+  const codeowners = Buffer.from('# the owner\n/docs/ @zgeoff\n').toString('base64');
+  const fake = buildFakeRunner({ prFiles: { code: 0, stdout: 'fleet.json\n', stderr: '' }, contents: { [`.github/CODEOWNERS?ref=${FAKE_BASE_SHA}`]: { code: 0, stdout: JSON.stringify({ type: 'file', encoding: 'base64', content: codeowners }), stderr: '' } } });
+
+  await expect(checkMergeGate({ run: fake.run, db: ctx.db, rawRepo: 'hq', pr: 7 })).rejects.toMatchObject({ code: 'merge_blocked', message: expect.stringContaining('owner-held files (fleet.json)') });
+});
+
+test("it reads CODEOWNERS at the PR's base commit, so a PR that drops /docs/ from it is still held", async () => {
+  const ctx = setupTest();
+  const baseText = Buffer.from('# the owner\n/docs/ @zgeoff\n').toString('base64');
+  const headText = Buffer.from('# the owner\n/skills/ @zgeoff\n').toString('base64');
+  const fake = buildFakeRunner({
+    prFiles: { code: 0, stdout: '.github/CODEOWNERS\ndocs/sessions.md\n', stderr: '' },
+    contents: {
+      [`.github/CODEOWNERS?ref=${FAKE_BASE_SHA}`]: { code: 0, stdout: JSON.stringify({ type: 'file', encoding: 'base64', content: baseText }), stderr: '' },
+      [`.github/CODEOWNERS?ref=${FAKE_FULL_SHA}`]: { code: 0, stdout: JSON.stringify({ type: 'file', encoding: 'base64', content: headText }), stderr: '' },
+    },
+  });
+
+  await expect(checkMergeGate({ run: fake.run, db: ctx.db, rawRepo: 'hq', pr: 7 })).rejects.toMatchObject({ code: 'merge_blocked', message: expect.stringContaining('owner-held files (docs/sessions.md)') });
+  expect(fake.lines()).toContain(`gh api repos/zgeoff/hq/contents/.github/CODEOWNERS?ref=${FAKE_BASE_SHA}`);
+  expect(fake.lines()).not.toContain(`gh api repos/zgeoff/hq/contents/.github/CODEOWNERS?ref=${FAKE_FULL_SHA}`);
+});
+
+test('it reads a root CODEOWNERS when the repo has none under .github', async () => {
+  const ctx = setupTest();
+  const codeowners = Buffer.from('# the owner\n/docs/ @zgeoff\n').toString('base64');
+  const fake = buildFakeRunner({ prFiles: { code: 0, stdout: 'docs/a.md\n', stderr: '' }, contents: { [`CODEOWNERS?ref=${FAKE_BASE_SHA}`]: { code: 0, stdout: JSON.stringify({ type: 'file', encoding: 'base64', content: codeowners }), stderr: '' } } });
+
+  await expect(checkMergeGate({ run: fake.run, db: ctx.db, rawRepo: 'hq', pr: 7 })).rejects.toMatchObject({ code: 'merge_blocked', message: expect.stringContaining('owner-held files (docs/a.md)') });
+});
+
+test("it falls back to hq-private's code rule when the repo has no CODEOWNERS", async () => {
+  const ctx = setupTest();
+  const fake = buildFakeRunner({ prFiles: { code: 0, stdout: 'grants/kettle.json\n', stderr: '' } });
+
+  await expect(checkMergeGate({ run: fake.run, db: ctx.db, rawRepo: 'hq-private', pr: 7 })).rejects.toMatchObject({ code: 'merge_blocked', message: expect.stringContaining('owner-held files (grants/kettle.json)') });
+});
+
+test('it blocks the merge when CODEOWNERS cannot be read', async () => {
+  const ctx = setupTest();
+  const fake = buildFakeRunner({ prFiles: { code: 0, stdout: 'src/x.ts\n', stderr: '' }, contents: { [`.github/CODEOWNERS?ref=${FAKE_BASE_SHA}`]: { code: 1, stdout: '', stderr: 'gh: Bad credentials (HTTP 401)' } } });
+
+  await expect(checkMergeGate({ run: fake.run, db: ctx.db, rawRepo: 'hq', pr: 7 })).rejects.toMatchObject({ code: 'merge_blocked', message: expect.stringContaining('could not read .github/CODEOWNERS at the PR') });
+});
+
+test('it blocks the merge when CODEOWNERS is not valid base64', async () => {
+  const ctx = setupTest();
+  const fake = buildFakeRunner({ prFiles: { code: 0, stdout: 'src/x.ts\n', stderr: '' }, contents: { [`.github/CODEOWNERS?ref=${FAKE_BASE_SHA}`]: { code: 0, stdout: JSON.stringify({ type: 'file', encoding: 'base64', content: '!!not base64!!' }), stderr: '' } } });
+
+  await expect(checkMergeGate({ run: fake.run, db: ctx.db, rawRepo: 'hq', pr: 7 })).rejects.toMatchObject({ code: 'merge_blocked', message: expect.stringContaining('could not read .github/CODEOWNERS at the PR') });
+});
+
+test('it blocks the merge when CODEOWNERS has no owner section', async () => {
+  const ctx = setupTest();
+  const codeowners = Buffer.from('# z-q\n/src/ @zgeoff\n').toString('base64');
+  const fake = buildFakeRunner({ prFiles: { code: 0, stdout: 'src/x.ts\n', stderr: '' }, contents: { [`.github/CODEOWNERS?ref=${FAKE_BASE_SHA}`]: { code: 0, stdout: JSON.stringify({ type: 'file', encoding: 'base64', content: codeowners }), stderr: '' } } });
+
+  await expect(checkMergeGate({ run: fake.run, db: ctx.db, rawRepo: 'hq', pr: 7 })).rejects.toMatchObject({ code: 'merge_blocked', message: expect.stringContaining('has no "# the owner" section') });
+});
+
+test('it confirms the base commit is readable before it takes two CODEOWNERS 404s as no file', async () => {
+  const ctx = setupTest();
+  const fake = buildFakeRunner({ prFiles: { code: 0, stdout: 'src/x.ts\n', stderr: '' } });
+
+  await expect(checkMergeGate({ run: fake.run, db: ctx.db, rawRepo: 'hq-private', pr: 7 })).resolves.toMatchObject({ mayMerge: true });
+  expect(fake.lines()).toContain(`gh api repos/zgeoff/hq-private/commits/${FAKE_BASE_SHA} --silent`);
+});
+
+test('it blocks the merge when both CODEOWNERS paths answer 404 and the base commit cannot be read', async () => {
+  const ctx = setupTest();
+  const fake = buildFakeRunner({ prFiles: { code: 0, stdout: 'src/x.ts\n', stderr: '' }, baseCommit: { code: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)' } });
+
+  await expect(checkMergeGate({ run: fake.run, db: ctx.db, rawRepo: 'hq', pr: 7 })).rejects.toMatchObject({ code: 'merge_blocked', message: expect.stringContaining("could not read the PR's base ba5eba5 to confirm the repo has no CODEOWNERS") });
 });

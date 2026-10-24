@@ -35,6 +35,13 @@ export interface FakeScript {
   workflows?: RunResult;
   baseWorkflows?: RunResult;
 
+  // What `gh api …/contents/<path>?ref=<ref>` answers for a CODEOWNERS path, keyed `<path>?ref=<ref>`;
+  // a 404 for any key it lacks.
+  contents?: Record<string, RunResult>;
+
+  // What `gh api repos/<slug>/commits/<sha> --silent` answers: the commit is readable when absent.
+  baseCommit?: RunResult;
+
   // What `gh api --paginate …/pulls/<pr>/files` prints: a path a line, with a renamed file's old
   // path after a tab. One source file when absent.
   prFiles?: RunResult;
@@ -67,6 +74,8 @@ export interface FakeRunner {
 }
 
 export const FAKE_FULL_SHA = '0123456789abcdef0123456789abcdef01234567';
+export const FAKE_BASE_SHA = 'ba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e';
+const NOT_FOUND: RunResult = { code: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)' };
 
 export const FAKE_REVIEW_JSON = JSON.stringify({
     version: 4,
@@ -122,7 +131,7 @@ function pickGhAnswer(script: FakeScript, line: string): RunResult | null {
     return buildResult(JSON.stringify({ headRefName: 'feat', headRefOid: FAKE_FULL_SHA, baseRefName: 'main' }));
   }
   if (line.includes('--json headRefOid,author,statusCheckRollup')) {
-    return script.prFacts ?? buildResult(JSON.stringify({ headRefOid: FAKE_FULL_SHA, baseRefName: 'main', author: JSON.parse(script.author ?? '{"author":{"login":"zgeoff","is_bot":false}}').author, statusCheckRollup: [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }] }));
+    return script.prFacts ?? buildResult(JSON.stringify({ headRefOid: FAKE_FULL_SHA, baseRefName: 'main', baseRefOid: FAKE_BASE_SHA, author: JSON.parse(script.author ?? '{"author":{"login":"zgeoff","is_bot":false}}').author, statusCheckRollup: [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }] }));
   }
   if (line.includes('--json headRefOid')) {
     return script.prHead ?? buildResult(JSON.stringify({ headRefOid: FAKE_FULL_SHA }));
@@ -136,6 +145,9 @@ function pickGhAnswer(script: FakeScript, line: string): RunResult | null {
   if (line.startsWith('gh api repos/') && line.includes('/contents/.github/workflows?ref=')) {
     return (line.includes('?ref=main ') ? script.baseWorkflows : undefined) ?? script.workflows ?? buildResult('');
   }
+  if (line.startsWith('gh api repos/') && line.includes('/contents/') && !line.includes('/contents/.github/workflows')) {
+    return script.contents?.[line.replace(/^gh api repos\/[^/]+\/[^/]+\/contents\//u, '')] ?? NOT_FOUND;
+  }
   if (line.startsWith('gh api --paginate repos/') && line.includes('/files?')) {
     return script.prFiles ?? buildResult('src/kettle.ts\n');
   }
@@ -144,6 +156,9 @@ function pickGhAnswer(script: FakeScript, line: string): RunResult | null {
   }
   if (line.startsWith('gh api repos/') && line.includes('/check-runs?check_name=noslop')) {
     return script.noslopChecks ?? buildResult(`${JSON.stringify({ id: 9001, name: 'noslop', app: 'noslop-review', status: 'completed', conclusion: 'success', title: 'No findings need attention.', completedAt: '2026-10-14T01:00:05Z' })}\n`);
+  }
+  if (/^gh api repos\/[^/]+\/[^/]+\/commits\/[0-9a-f]+ --silent$/u.test(line)) {
+    return script.baseCommit ?? buildResult('');
   }
   if (line.startsWith('gh api graphql')) {
     return buildResult('1\n');
