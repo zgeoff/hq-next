@@ -3,11 +3,13 @@ import { expect, onTestFinished, test } from 'bun:test';
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import rulesTable from '../lanes.json';
-import { NOON_SYDNEY, fakeAtc, freshDb } from '../test/helpers.ts';
+import { NOON_SYDNEY, at, fakeAtc, freshDb } from '../test/helpers.ts';
 import { main } from './cli.ts';
 import { overrideEnv } from './config/override-env.ts';
 import { setMeta } from './db/set-meta.ts';
 import { loadActionsSpend } from './goals/load-actions-spend.ts';
+import { createGrantMark } from './grants/create-grant-mark.ts';
+import { recordGrantAction } from './grants/record-grant-action.ts';
 import { addRun } from './runs/add-run.ts';
 
 // A database at noon Sydney, quiet notices and console, and a stand-in gh on PATH for
@@ -348,4 +350,81 @@ test('hq capacity --json carries the Claude burn hint from the usage samples', a
 
   expect(code).toBe(0);
   expect(JSON.parse(stdout)).toMatchObject({ hint: { hours: 2, limit: 95, account: 'kettle01', windows: [{ window: '7-day', samples: 2, ratePerHour: null }, { window: '5-hour', samples: 2, ratePerHour: null }] } });
+});
+
+test('hq grant void refuses bad arguments through the spawned CLI, and writes nothing', async () => {
+  const fresh = freshDb();
+  onTestFinished(fresh.cleanup);
+  at(NOON_SYDNEY);
+  createGrantMark(fresh.db, { text: 'kettle PRs merge on green CI', ref: null, at: null, name: 'kettle-merges', actor: 'kettle-bot' });
+  recordGrantAction(fresh.db, { grant: 'kettle-merges', target: 'kettle#9', note: null, actor: 'teapot-bot' });
+  const actionsBefore = fresh.db.query('SELECT * FROM grant_actions ORDER BY id').all();
+  const eventsBefore = fresh.db.query('SELECT * FROM events ORDER BY seq').all();
+  const newsBefore = fresh.db.query('SELECT * FROM news ORDER BY id').all();
+  const hq = async (...args: string[]): Promise<{ code: number; stdout: string }> => {
+    const child = Bun.spawn(['bun', join(import.meta.dir, 'cli.ts'), 'grant', 'void', ...args, '--json'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: { ...process.env, HOME: fresh.dir, HQ_DB: fresh.path, HQ_NOTIFY: 'off', HQ_NOW: NOON_SYDNEY },
+    });
+    const [code, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+    return { code, stdout };
+  };
+
+  const noReason = await hq('1');
+  const badID = await hq('kettle', '--reason', 'wrong PR');
+  const blankReason = await hq('1', '--reason', '  ');
+
+  expect([noReason.code, badID.code, blankReason.code]).toStrictEqual([1, 1, 1]);
+  expect(JSON.parse(noReason.stdout)).toMatchObject({ ok: false, error: { code: 'bad_args', message: expect.stringContaining('--reason is required') } });
+  expect(JSON.parse(badID.stdout)).toMatchObject({ ok: false, error: { code: 'bad_args', message: expect.stringContaining('the act id must be a positive whole number') } });
+  expect(JSON.parse(blankReason.stdout)).toMatchObject({ ok: false, error: { code: 'bad_args', message: expect.stringContaining('--reason must say why') } });
+  expect(fresh.db.query('SELECT * FROM grant_actions ORDER BY id').all()).toStrictEqual(actionsBefore);
+  expect(fresh.db.query('SELECT * FROM events ORDER BY seq').all()).toStrictEqual(eventsBefore);
+  expect(fresh.db.query('SELECT * FROM news ORDER BY id').all()).toStrictEqual(newsBefore);
+});
+
+test('hq grant void refuses a caller atc cannot name, whatever --by and HQ_AS claim, and the act stays', async () => {
+  const fresh = freshDb();
+  onTestFinished(fresh.cleanup);
+  at(NOON_SYDNEY);
+  setMeta(fresh.db, 'fleet_ids', JSON.stringify({ 'z-stu': 'kettle-1', 'teapot-bot': 'kettle-2' }));
+  createGrantMark(fresh.db, { text: 'kettle PRs merge on green CI', ref: null, at: null, name: 'kettle-merges', actor: 'kettle-bot' });
+  recordGrantAction(fresh.db, { grant: 'kettle-merges', target: 'kettle#9', note: null, actor: 'teapot-bot' });
+  const child = Bun.spawn(['bun', join(import.meta.dir, 'cli.ts'), 'grant', 'void', '1', '--reason', 'wrong PR', '--by', 'z-stu', '--json'], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: { ...process.env, HOME: fresh.dir, HQ_DB: fresh.path, HQ_NOTIFY: 'off', HQ_NOW: NOON_SYDNEY, HQ_AS: 'z-stu', ATC_SESSION_ID: 'kettle-1' },
+  });
+
+  const [code, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+
+  expect(code).toBe(1);
+  expect(JSON.parse(stdout)).toMatchObject({ ok: false, error: { code: 'not_allowed', message: expect.stringContaining('only teapot-bot, who logged grant action 1, or z-stu may void it; atc cannot say who is calling') } });
+  expect(fresh.db.query('SELECT voided_at FROM grant_actions').all()).toStrictEqual([{ voided_at: null }]);
+});
+
+test('hq grant actions shows a voided act struck out with its reason in text and in --json, and leaves it out of the count', async () => {
+  const fresh = freshDb();
+  onTestFinished(fresh.cleanup);
+  at(NOON_SYDNEY);
+  createGrantMark(fresh.db, { text: 'kettle PRs merge on green CI', ref: null, at: null, name: 'kettle-merges', actor: 'kettle-bot' });
+  recordGrantAction(fresh.db, { grant: 'kettle-merges', target: 'kettle#8', note: null, actor: 'teapot-bot' });
+  recordGrantAction(fresh.db, { grant: 'kettle-merges', target: 'kettle#9', note: null, actor: 'teapot-bot' });
+  fresh.db.query("UPDATE grant_actions SET voided_at = '2026-10-14T01:30:00Z', voided_by = 'z-stu', void_reason = 'logged before the merge failed' WHERE id = 1").run();
+  const hq = async (...args: string[]): Promise<string> => {
+    const child = Bun.spawn(['bun', join(import.meta.dir, 'cli.ts'), 'grant', 'actions', '--since', '1d', ...args], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: { ...process.env, HOME: fresh.dir, HQ_DB: fresh.path, HQ_NOTIFY: 'off', HQ_NOW: '2026-10-14T02:00:00Z' },
+    });
+    const [, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+    return stdout;
+  };
+
+  const text = await hq();
+  const json = await hq('--json');
+
+  expect(text.trim()).toBe('kettle-merges (mark 1): 1: kettle#9 (teapot-bot); ~~kettle#8 (teapot-bot)~~ void act 1, 2026-10-14T01:30:00Z by z-stu: logged before the merge failed');
+  expect(JSON.parse(json).grants[0].voided).toStrictEqual([{ id: 1, target: 'kettle#8', note: null, actor: 'teapot-bot', at: NOON_SYDNEY, voidedAt: '2026-10-14T01:30:00Z', voidedBy: 'z-stu', voidReason: 'logged before the merge failed' }]);
 });

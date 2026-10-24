@@ -59,7 +59,7 @@ hq 0.79.0: headquarters for the z- sessions. Every command takes --json.
   hq typed add --to SESSION --text T|--text-file F --source call:ID|proposal:ID|console:ID|chat:SESSION@TIME   log a line typed into a session as the owner
   hq typed [list] [--session S] [--limit N]   the typed-line log, newest first
   hq mark add --kind skills|grant|hq|other --text T [--ref URL|repo#n|GEO-n] [--at TIME] [--grant NAME] | hq mark [list] [--since 7d] | hq mark drop ID | hq mark grant ID NAME
-  hq grant act NAME --target ISSUE|PR|COMMAND [--note T] | hq grant [actions] [--since 7d]   record an action taken under a named standing grant; actions lists each named grant with its actions in the window, one line each
+  hq grant act NAME --target ISSUE|PR|COMMAND [--note T] | hq grant void ACT-ID --reason T | hq grant [actions] [--since 7d]   record an action taken under a named standing grant; void takes back one logged in error; actions lists each named grant with its actions in the window, one line each
   hq fleet [status] [--prompts] | ensure [--dry-run] [--now NAME,...]   the declared z- sessions and stale prompts (--json checks prompts only with --prompts); ensure spawns a missing one (never a duplicate); --now skips the wait for those names (a deliberate re-home)
   hq fleet rc NAME                           the Remote Control helper (ensure starts it after a spawn): types /remote-control once if it is off, never if it is on or unclear
   hq fleet timer install | remove            run ensure every 5 minutes

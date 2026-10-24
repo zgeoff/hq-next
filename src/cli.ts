@@ -212,7 +212,9 @@ import { mergeAnswerWeeks } from './answers/merge-answer-weeks.ts';
 import { createGrantMark } from './grants/create-grant-mark.ts';
 import { formatGrantLine } from './grants/format-grant-line.ts';
 import { loadGrantTallies } from './grants/load-grant-tallies.ts';
+import { parseGrantVoidArgs } from './grants/parse-grant-void-args.ts';
 import { recordGrantAction } from './grants/record-grant-action.ts';
+import { voidGrantAction } from './grants/void-grant-action.ts';
 import { updateMarkGrantName } from './grants/update-mark-grant-name.ts';
 import { orchestratorName } from './wake/orchestrator-name.ts';
 import { parseWakeFile } from './wake/parse-wake-file.ts';
@@ -264,6 +266,7 @@ import { renderVersion } from './build/render-version.ts';
 import { setMeta } from './db/set-meta.ts';
 import { iso } from './clock/iso.ts';
 import { now } from './clock/now.ts';
+import { readWallClock } from './clock/read-wall-clock.ts';
 import { accountLabels } from './accounts/account-labels.ts';
 import { setAccountLabel } from './accounts/set-account-label.ts';
 import { capabilities } from './capabilities/capabilities.ts';
@@ -1469,12 +1472,16 @@ async function runMarkGrant(db: Database, args: string[], flags: Flags): Promise
   return { data: { mark: m }, text: `Mark ${m.id} is grant ${m.grant_name}: ${m.text}` };
 }
 
-// `hq grant act` from a session acting under a standing grant; `hq grant actions` for the weekly report.
+// `hq grant act` from a session acting under a standing grant; `hq grant void` takes one back; `hq grant actions` for the weekly report.
 async function runGrantCommand(db: Database, verb: string | undefined, args: string[], flags: Flags): Promise<Out> {
   if (verb === 'act') {
     const by = await actor(db, flags),
       recorded = recordGrantAction(db, { grant: need(args[0], 'grant name'), target: need(flags.target, 'target'), note: flags.note ?? null, actor: by });
     return { data: { action: recorded }, text: `Recorded ${recorded.id} under ${recorded.grant_name}: ${recorded.target}` };
+  }
+  if (verb === 'void') {
+    const voided = await voidGrantAction({ db, args: parseGrantVoidArgs(args, flags.reason), probe: readOwnerProbeDeps(), clock: readWallClock });
+    return { data: { action: voided }, text: `Voided ${voided.id} under ${voided.grant_name}: ${voided.target} (${voided.void_reason})` };
   }
   if (verb !== 'actions' && verb !== undefined) {
     throw new HqError('bad_args', `unknown command: hq grant ${verb}`);

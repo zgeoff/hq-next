@@ -618,4 +618,10 @@ export const MIGRATIONS: string[] = [
     minutes REAL NOT NULL,
     PRIMARY KEY (day, cause)
   );`,
+
+  // v43: voiding a grant action logged in error. The row stays; voided_at, voided_by and void_reason
+  // are NULL on a live action and on every row from before v43.
+  `ALTER TABLE grant_actions ADD COLUMN voided_at TEXT;
+  ALTER TABLE grant_actions ADD COLUMN voided_by TEXT;
+  ALTER TABLE grant_actions ADD COLUMN void_reason TEXT;`,
 ];

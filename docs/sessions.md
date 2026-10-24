@@ -98,3 +98,5 @@ The sessions run commands on the owner's computer themselves, which Nix never do
 ## acting under a standing grant
 
 A standing grant lets a session act without asking the owner each time. Each one lands as a `grant` mark with a short name, `hq mark add --kind grant --text T --ref PR --grant NAME`. Each time a session acts under the grant, it records the action with `hq grant act NAME --target ISSUE|PR|COMMAND [--note T]`, and hq refuses a name no mark carries. `hq grant actions --since 7d` lists every named grant with its actions in the week, so the weekly report shows what ran under each grant and which grant went unused.
+
+Log a grant act only after its action succeeded, and check the result first (for a merge, `gh pr view` shows MERGED). If you logged an act in error, void it: `hq grant void ACT-ID --reason T`. Only the session that logged the act or the owner's session, `z-stu`, may void it. hq keeps a void act: `hq grant actions` shows it struck out with who voided it and why, and leaves it out of the grant's count.
